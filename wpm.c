@@ -21,7 +21,7 @@
 #define BASE_URL    "https://raw.githubusercontent.com/SPERMA22814886752/wpm-repo/main"
 #define BASE_PATH   ""
 #define PACKAGES_FILE "Packages"
-#define POOL_DIR    "pool/main"
+#define POOL_DIR    "pool/main" 
 
 static const char *install_prefix(void) {
     static char buf[256];
