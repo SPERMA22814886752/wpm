@@ -18,8 +18,8 @@
 #include <fcntl.h>
 
 /* ---------- конфигурация ---------- */
-#define BASE_URL    "https://deftly-masculine-possum.cloudpub.ru"  // репозиторий
-#define BASE_PATH   "/wilix"
+#define BASE_URL    "https://raw.githubusercontent.com/SPERMA22814886752/wpm-repo/main"
+#define BASE_PATH   ""
 #define PACKAGES_FILE "Packages"
 #define POOL_DIR    "pool/main"
 
