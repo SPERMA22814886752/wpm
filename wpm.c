@@ -21,7 +21,8 @@
 #define BASE_URL    "https://raw.githubusercontent.com/SPERMA22814886752/wpm-repo/main"
 #define BASE_PATH   ""
 #define PACKAGES_FILE "Packages"
-#define POOL_DIR    "pool/main" 
+#define POOL_DIR    "pool/main"
+#define POOL_DIR_LIBS "pool/main/libs"
 
 static const char *install_prefix(void) {
     static char buf[256];
@@ -29,6 +30,15 @@ static const char *install_prefix(void) {
     const char *home = getenv("HOME");
     if (!home) home = "/tmp";
     snprintf(buf, sizeof(buf), "%s/.local", home);
+    return buf;
+}
+
+static const char *lib_dir(void) {
+    static char buf[256];
+    if (geteuid() == 0) return "/usr/local/lib";
+    const char *home = getenv("HOME");
+    if (!home) home = "/tmp";
+    snprintf(buf, sizeof(buf), "%s/.local/lib", home);
     return buf;
 }
 
@@ -207,9 +217,11 @@ static int download_packages_list(const char *url, const char *output) {
 struct Package {
     char name[128];
     char version[64];
+    char type[16];        // "bin" или "lib"
     char filename[256];
     size_t size;
     char md5[64];
+    char destdir[128];    // "bin" или "lib"
 };
 
 static struct Package packages[100];
@@ -237,7 +249,7 @@ static void parse_packages_file(const char *filepath) {
             continue;
         }
         
-        if (line[0] == ' ') continue;
+        if (line[0] == ' ' || line[0] == '#') continue;
         
         char *colon = strchr(line, ':');
         if (!colon) continue;
@@ -251,12 +263,16 @@ static void parse_packages_file(const char *filepath) {
             strncpy(p.name, value, sizeof(p.name) - 1);
         else if (!strcmp(key, "Version"))
             strncpy(p.version, value, sizeof(p.version) - 1);
+        else if (!strcmp(key, "Type"))
+            strncpy(p.type, value, sizeof(p.type) - 1);
         else if (!strcmp(key, "Filename"))
             strncpy(p.filename, value, sizeof(p.filename) - 1);
         else if (!strcmp(key, "Size"))
             p.size = strtoul(value, NULL, 10);
         else if (!strncmp(key, "MD5", 3))
             strncpy(p.md5, value, sizeof(p.md5) - 1);
+        else if (!strcmp(key, "DestDir"))
+            strncpy(p.destdir, value, sizeof(p.destdir) - 1);
     }
     
     if (p.name[0] && pkg_count < 100) {
@@ -322,10 +338,10 @@ static int cmd_add(const char *name) {
         }
     }
     
-    // Парсим кэш
+    // парсим кэш
     parse_packages_file(cache_path);
     
-    // Ищем пакет
+    // ищем пакет
     struct Package *pkg = find_package(name);
     if (!pkg) {
         fprintf(stderr, "Package '%s' not found.\n\n", name);
@@ -335,6 +351,8 @@ static int cmd_add(const char *name) {
                 fprintf(stderr, "  - %s", packages[i].name);
                 if (packages[i].version[0])
                     fprintf(stderr, " (%s)", packages[i].version);
+                if (packages[i].type[0])
+                    fprintf(stderr, " [%s]", packages[i].type);
                 if (packages[i].size > 0)
                     fprintf(stderr, " [%zu bytes]", packages[i].size);
                 fprintf(stderr, "\n");
@@ -343,14 +361,17 @@ static int cmd_add(const char *name) {
         return 1;
     }
     
-    printf("\n%s\n", pkg->name);
+    printf("\n%s (%s)\n", pkg->name, pkg->type[0] ? pkg->type : "bin");
     
     // формируем URL
     char url[512];
     if (pkg->filename[0])
         snprintf(url, sizeof(url), "%s/%s/%s", BASE_URL, BASE_PATH, pkg->filename);
-    else
-        snprintf(url, sizeof(url), "%s/%s/%s/%s", BASE_URL, BASE_PATH, POOL_DIR, pkg->name);
+    else {
+        // используем pool_dir или pool_dir_libs в зависимости от типа
+        const char *pool = (!strcmp(pkg->type, "lib")) ? POOL_DIR_LIBS : POOL_DIR;
+        snprintf(url, sizeof(url), "%s/%s/%s/%s", BASE_URL, BASE_PATH, pool, pkg->name);
+    }
     
     // временный файл
     char tmp_path[512];
@@ -365,9 +386,13 @@ static int cmd_add(const char *name) {
         return 1;
     }
     
-    // устанавливаем
+    // определяем директорию установки
     char dest_dir[512];
-    snprintf(dest_dir, sizeof(dest_dir), "%s/bin", install_prefix());
+    if (!strcmp(pkg->type, "lib")) {
+        snprintf(dest_dir, sizeof(dest_dir), "%s", lib_dir());
+    } else {
+        snprintf(dest_dir, sizeof(dest_dir), "%s/bin", install_prefix());
+    }
     mkdir_p(dest_dir);
     
     char dest_path[512];
@@ -380,13 +405,21 @@ static int cmd_add(const char *name) {
         return 1;
     }
     
-    // chmod +x
-    if (chmod(dest_path, 0755) != 0) {
-        perror("chmod");
-        fprintf(stderr, "Warning: could not make file executable\n");
+    // chmod +x для бинарников
+    if (!strcmp(pkg->type, "bin")) {
+        if (chmod(dest_path, 0755) != 0) {
+            perror("chmod");
+            fprintf(stderr, "Warning: could not make file executable\n");
+        }
+    } else {
+        // библиотеки: chmod 644
+        if (chmod(dest_path, 0644) != 0) {
+            perror("chmod");
+            fprintf(stderr, "Warning: could not set library permissions\n");
+        }
     }
     
-    printf("\nInstall success!\n");
+    printf("\nInstall success! -> %s\n", dest_path);
     return 0;
 }
 
@@ -461,6 +494,8 @@ static int cmd_search(const char *query) {
             printf("  %-20s", packages[i].name);
             if (packages[i].version[0])
                 printf("%-10s", packages[i].version);
+            if (packages[i].type[0])
+                printf("[%-4s]", packages[i].type);
             if (packages[i].size > 0)
                 printf("%8zu bytes", packages[i].size);
             printf("\n");
@@ -485,10 +520,12 @@ static void usage(const char *prog) {
     printf("  %s update             Force cache update\n", prog);
     printf("  %s --delete-cache     Clear local cache\n", prog);
     printf("\nExamples:\n");
-    printf("  %s add nano\n", prog);
+    printf("  %s add nano           Install binary\n", prog);
+    printf("  %s add libtest        Install library\n", prog);
     printf("  %s search edit\n", prog);
     printf("\nCache: %s\n", cache_dir());
-    printf("Install prefix: %s/bin\n", install_prefix());
+    printf("Install prefix (bin): %s/bin\n", install_prefix());
+    printf("Install prefix (lib): %s\n", lib_dir());
 }
 
 int main(int argc, char **argv) {
