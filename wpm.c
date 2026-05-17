@@ -78,7 +78,7 @@ static int download_with_progress(const char *url, const char *output, size_t ex
             dup2(devnull, STDERR_FILENO);
             close(devnull);
         }
-        execlp("wget", "wget", "--no-check-certificate", "-q", "-O", output, url, NULL);
+        execlp("wget", "wget", "--no-check-certificate", "-O", output, url, NULL);
         _exit(127);
     }
     
@@ -172,7 +172,7 @@ static int download_packages_list(const char *url, const char *output) {
             dup2(devnull, STDERR_FILENO);
             close(devnull);
         }
-        execlp("wget", "wget", "--no-check-certificate", "-q", "-O", output, url, NULL);
+        execlp("wget", "wget", "--no-check-certificate", "-O", output, url, NULL);
         _exit(127);
     }
     
