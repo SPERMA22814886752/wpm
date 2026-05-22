@@ -1,7 +1,9 @@
 /*
- * WPM - Wilix Package Manager
-*/
-
+ * WPM - Wilix Package Manager (root required except list -i)
+ * Binaries -> /usr/bin
+ * Libraries -> /usr/lib
+ * Support: bin, lib, so, a, la, script, dir, dev
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,40 +19,22 @@
 #include <signal.h>
 #include <fcntl.h>
 
-/* ---------- конфигурация ---------- */
+/* ---------- конфигурация (root only) ---------- */
 #define BASE_URL    "https://raw.githubusercontent.com/SPERMA22814886752/wpm-repo/main"
-#define BASE_PATH   ""
 #define PACKAGES_FILE "Packages"
+#define INSTALLED_DB  "installed.list"
 #define POOL_DIR    "pool/main"
-#define POOL_DIR_LIBS "pool/main/libs"
 
 static const char *install_prefix(void) {
-    static char buf[256];
-    if (geteuid() == 0) return "/usr/local";
-    const char *home = getenv("HOME");
-    if (!home) home = "/tmp";
-    snprintf(buf, sizeof(buf), "%s/.local", home);
-    return buf;
+    return "/usr";
 }
 
 static const char *lib_dir(void) {
-    static char buf[256];
-    if (geteuid() == 0) return "/usr/local/lib";
-    const char *home = getenv("HOME");
-    if (!home) home = "/tmp";
-    snprintf(buf, sizeof(buf), "%s/.local/lib", home);
-    return buf;
+    return "/usr/lib";
 }
 
 static const char *cache_dir(void) {
-    static char buf[256];
-    if (geteuid() == 0) snprintf(buf, sizeof(buf), "/var/cache/wpm");
-    else {
-        const char *home = getenv("HOME");
-        if (!home) home = "/tmp";
-        snprintf(buf, sizeof(buf), "%s/.cache/wpm", home);
-    }
-    return buf;
+    return "/var/cache/wpm";
 }
 
 /* ---------- утилиты ---------- */
@@ -77,11 +61,8 @@ static size_t file_size(const char *path) {
 /* ---------- загрузка ---------- */
 static int download_with_progress(const char *url, const char *output, size_t expected_size) {
     printf("\n");
-    
-    // запускаем wget
     pid_t pid = fork();
     if (pid == 0) {
-        // перенаправляем вывод wget в /dev/null
         int devnull = open("/dev/null", O_WRONLY);
         if (devnull != -1) {
             dup2(devnull, STDOUT_FILENO);
@@ -91,46 +72,34 @@ static int download_with_progress(const char *url, const char *output, size_t ex
         execlp("wget", "wget", "--no-check-certificate", "-O", output, url, NULL);
         _exit(127);
     }
-    
     if (pid < 0) {
         fprintf(stderr, "Error: fork failed\n");
         return -1;
     }
-    
-    // свой прогресс-бар
     if (expected_size > 0) {
         printf("[");
         fflush(stdout);
-        
         int last_percent = 0;
-        
         while (1) {
             int status;
             pid_t result = waitpid(pid, &status, WNOHANG);
-            
             if (result == pid) {
                 printf("\r[====================] 100%%\n");
                 fflush(stdout);
-                
-                if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-                    return 0;
-                } else if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+                if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return 0;
+                if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
                     fprintf(stderr, "Error: wget not found. Install wget first.\n");
                     return -1;
-                } else {
-                    fprintf(stderr, "Download failed (exit code: %d)\n", 
-                            WIFEXITED(status) ? WEXITSTATUS(status) : -1);
-                    return -1;
                 }
+                fprintf(stderr, "Download failed (exit code: %d)\n",
+                        WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+                return -1;
             }
-            
-            // проверяем текущий размер файла
             size_t current = file_size(output);
             if (current > 0 && expected_size > 0) {
                 int percent = (int)(current * 100 / expected_size);
                 if (percent > last_percent && percent <= 100) {
                     last_percent = percent;
-                    
                     printf("\r[");
                     int bars = percent / 5;
                     for (int i = 0; i < 20; i++) {
@@ -142,23 +111,18 @@ static int download_with_progress(const char *url, const char *output, size_t ex
                     fflush(stdout);
                 }
             }
-            
-            usleep(50000); // 50ms
+            usleep(50000);
         }
     } else {
-        // размер неизвестен - показываем спиннер
         int spin = 0;
         const char spinner[] = "/-\\|";
         int status;
-        
         while (waitpid(pid, &status, WNOHANG) == 0) {
             printf("\r\033[KDownloading %c", spinner[spin++ % 4]);
             fflush(stdout);
             usleep(100000);
         }
-        
         printf("\r\033[K");
-        
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
             printf("Download complete\n");
             return 0;
@@ -172,7 +136,6 @@ static int download_with_progress(const char *url, const char *output, size_t ex
     }
 }
 
-/* ---------- загрузка Packages ---------- */
 static int download_packages_list(const char *url, const char *output) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -185,22 +148,17 @@ static int download_packages_list(const char *url, const char *output) {
         execlp("wget", "wget", "--no-check-certificate", "-O", output, url, NULL);
         _exit(127);
     }
-    
     if (pid < 0) return -1;
-    
     int spin = 0;
     const char spinner[] = "/|\\-";
     int status;
-    
     fprintf(stderr, "Search the file ");
     fflush(stderr);
-    
     while (waitpid(pid, &status, WNOHANG) == 0) {
         fprintf(stderr, "\r\033[KSearch the file %c", spinner[spin++ % 4]);
         fflush(stderr);
         usleep(100000);
     }
-    
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
         fprintf(stderr, "\r\033[KSearch the file OK\n");
         return 0;
@@ -217,16 +175,21 @@ static int download_packages_list(const char *url, const char *output) {
 struct Package {
     char name[128];
     char version[64];
-    char type[16];        // "bin" или "lib"
+    char type[16];
     char filename[256];
     size_t size;
-    char md5[64];
-    char destdir[128];    // "bin" или "lib"
+    char md5sum[64];
+    char destdir[128];
+    char libc_type[8];
+    char so_libc_path[256];
+    char a_libc_path[256];
+    bool is_archive;
 };
 
 static struct Package packages[100];
 static int pkg_count = 0;
 
+/* ---------- парсинг Packages ---------- */
 static void parse_packages_file(const char *filepath) {
     pkg_count = 0;
     FILE *f = fopen(filepath, "r");
@@ -240,218 +203,350 @@ static void parse_packages_file(const char *filepath) {
         size_t len = strlen(line);
         while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
             line[--len] = '\0';
-        
         if (len == 0) {
             if (p.name[0] && pkg_count < 100) {
+                const char *fname = p.filename;
+                if (fname[0]) {
+                    size_t flen = strlen(fname);
+                    if ((flen > 7 && !strcmp(fname + flen - 7, ".tar.gz")) ||
+                        (flen > 4 && !strcmp(fname + flen - 4, ".tar")))
+                        p.is_archive = true;
+                }
                 packages[pkg_count++] = p;
                 memset(&p, 0, sizeof(p));
             }
             continue;
         }
-        
         if (line[0] == ' ' || line[0] == '#') continue;
-        
         char *colon = strchr(line, ':');
         if (!colon) continue;
-        
         *colon = '\0';
         char *key = line;
         char *value = colon + 1;
         while (*value == ' ') value++;
         
-        if (!strcmp(key, "Package"))
-            strncpy(p.name, value, sizeof(p.name) - 1);
-        else if (!strcmp(key, "Version"))
-            strncpy(p.version, value, sizeof(p.version) - 1);
-        else if (!strcmp(key, "Type"))
-            strncpy(p.type, value, sizeof(p.type) - 1);
-        else if (!strcmp(key, "Filename"))
-            strncpy(p.filename, value, sizeof(p.filename) - 1);
-        else if (!strcmp(key, "Size"))
-            p.size = strtoul(value, NULL, 10);
-        else if (!strncmp(key, "MD5", 3))
-            strncpy(p.md5, value, sizeof(p.md5) - 1);
-        else if (!strcmp(key, "DestDir"))
-            strncpy(p.destdir, value, sizeof(p.destdir) - 1);
+        if (!strcmp(key, "Package")) strncpy(p.name, value, sizeof(p.name)-1);
+        else if (!strcmp(key, "Version")) strncpy(p.version, value, sizeof(p.version)-1);
+        else if (!strcmp(key, "Type")) strncpy(p.type, value, sizeof(p.type)-1);
+        else if (!strcmp(key, "Filename")) strncpy(p.filename, value, sizeof(p.filename)-1);
+        else if (!strcmp(key, "Size")) p.size = strtoul(value, NULL, 10);
+        else if (!strcmp(key, "MD5sum") || !strcmp(key, "MD5")) strncpy(p.md5sum, value, sizeof(p.md5sum)-1);
+        else if (!strcmp(key, "DestDir")) strncpy(p.destdir, value, sizeof(p.destdir)-1);
+        else if (!strcmp(key, "libc")) strncpy(p.libc_type, value, sizeof(p.libc_type)-1);
+        else if (!strcmp(key, "so libc")) strncpy(p.so_libc_path, value, sizeof(p.so_libc_path)-1);
+        else if (!strcmp(key, "a libc")) strncpy(p.a_libc_path, value, sizeof(p.a_libc_path)-1);
     }
-    
     if (p.name[0] && pkg_count < 100) {
+        const char *fname = p.filename;
+        if (fname[0]) {
+            size_t flen = strlen(fname);
+            if ((flen > 7 && !strcmp(fname + flen - 7, ".tar.gz")) ||
+                (flen > 4 && !strcmp(fname + flen - 4, ".tar")))
+                p.is_archive = true;
+        }
         packages[pkg_count++] = p;
     }
-    
     fclose(f);
 }
 
 static struct Package *find_package(const char *name) {
-    for (int i = 0; i < pkg_count; i++) {
-        if (!strcmp(packages[i].name, name))
-            return &packages[i];
-    }
+    for (int i = 0; i < pkg_count; i++)
+        if (!strcmp(packages[i].name, name)) return &packages[i];
     return NULL;
+}
+
+/* ---------- проверка установленных библиотек ---------- */
+static int lib_is_installed(const char *libname) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", lib_dir(), libname);
+    return file_exists(path);
+}
+
+/* ---------- распаковка архива ---------- */
+static int extract_archive(const char *archive_path, const char *dest_dir) {
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C \"%s\" 2>/dev/null", archive_path, dest_dir);
+    return system(cmd) == 0 ? 0 : -1;
+}
+
+/* ---------- проверка ldd (пропускаем не‑ELF) ---------- */
+static void check_ldd(const char *binary_path) {
+    // Пропускаем файлы, которые точно не ELF
+    const char *ext = strrchr(binary_path, '.');
+    if (ext) {
+        if (!strcmp(ext, ".a") || !strcmp(ext, ".la") ||
+            !strcmp(ext, ".h") || !strcmp(ext, ".hpp") ||
+            !strcmp(ext, ".pc") || !strcmp(ext, ".txt") ||
+            !strcmp(ext, ".md") || !strcmp(ext, ".cmake"))
+            return;
+    }
+
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "ldd \"%s\" 2>/dev/null", binary_path);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return;
+    char line[512];
+    bool has_not_found = false;
+    printf("ldd %s:\n", binary_path);
+    while (fgets(line, sizeof(line), fp)) {
+        size_t l = strlen(line);
+        if (l > 0 && line[l-1] == '\n') line[l-1] = '\0';
+        printf("  %s\n", line);
+        if (strstr(line, "not found")) has_not_found = true;
+    }
+    pclose(fp);
+    if (has_not_found)
+        fprintf(stderr, "[ERROR 109] Error with install lib! Missing libraries (not found) in binary %s. Report to creator.\n", binary_path);
+}
+
+static void check_dir_ldd(const char *dir) {
+    DIR *dp = opendir(dir);
+    if (!dp) return;
+    struct dirent *entry;
+    while ((entry = readdir(dp)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) check_dir_ldd(path);
+        else if (S_ISREG(st.st_mode)) check_ldd(path);
+    }
+    closedir(dp);
+}
+
+/* ---------- локальная база установленных пакетов ---------- */
+static void record_installed(const struct Package *pkg) {
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/%s", cache_dir(), INSTALLED_DB);
+    mkdir_p(cache_dir());
+    FILE *f = fopen(db_path, "a");
+    if (!f) {
+        perror("fopen installed.db");
+        return;
+    }
+    fprintf(f, "%s|%s|%s|%s\n", pkg->name, pkg->version, pkg->type, pkg->destdir[0] ? pkg->destdir : "bin");
+    fclose(f);
+    chmod(db_path, 0644);
+}
+
+static int cmd_list_installed(void) {
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/%s", cache_dir(), INSTALLED_DB);
+    FILE *f = fopen(db_path, "r");
+    if (!f) {
+        printf("No packages installed.\n");
+        return 0;
+    }
+    printf("Installed packages:\n");
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+        if (len == 0) continue;
+        char *name = strtok(line, "|");
+        char *ver = strtok(NULL, "|");
+        char *type = strtok(NULL, "|");
+        char *dest = strtok(NULL, "|");
+        printf("  %-20s %-10s %-6s %s\n", name ? name : "-",
+               ver ? ver : "-", type ? type : "-", dest ? dest : "bin");
+    }
+    fclose(f);
+    return 0;
 }
 
 /* ---------- команды ---------- */
 static int cmd_list_packages(void) {
     char cache_path[512];
     snprintf(cache_path, sizeof(cache_path), "%s/%s", cache_dir(), PACKAGES_FILE);
-    
     if (!file_exists(cache_path) || file_size(cache_path) < 10) {
         mkdir_p(cache_dir());
         char url[512];
-        snprintf(url, sizeof(url), "%s%s/%s", BASE_URL, BASE_PATH, PACKAGES_FILE);
-        
+        snprintf(url, sizeof(url), "%s/%s", BASE_URL, PACKAGES_FILE);
         if (download_packages_list(url, cache_path) != 0) {
             fprintf(stderr, "Failed to download package list\n");
             return 1;
         }
     }
-    
     printf("\n");
     FILE *f = fopen(cache_path, "r");
-    if (!f) {
-        perror("fopen");
-        return 1;
-    }
-    
+    if (!f) { perror("fopen"); return 1; }
     char buf[4096];
     size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
-        fwrite(buf, 1, n, stdout);
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) fwrite(buf, 1, n, stdout);
     fclose(f);
-    
     return 0;
 }
 
 static int cmd_add(const char *name) {
     char cache_path[512];
     snprintf(cache_path, sizeof(cache_path), "%s/%s", cache_dir(), PACKAGES_FILE);
-    
-    // обновляем кэш если нужно
     if (!file_exists(cache_path) || file_size(cache_path) < 10) {
         mkdir_p(cache_dir());
         char url[512];
-        snprintf(url, sizeof(url), "%s%s/%s", BASE_URL, BASE_PATH, PACKAGES_FILE);
-        
+        snprintf(url, sizeof(url), "%s/%s", BASE_URL, PACKAGES_FILE);
         if (download_packages_list(url, cache_path) != 0) {
             fprintf(stderr, "Failed to download package list\n");
             return 1;
         }
     }
-    
-    // парсим кэш
     parse_packages_file(cache_path);
-    
-    // ищем пакет
     struct Package *pkg = find_package(name);
     if (!pkg) {
         fprintf(stderr, "Package '%s' not found.\n\n", name);
         if (pkg_count > 0) {
             fprintf(stderr, "Available packages:\n");
-            for (int i = 0; i < pkg_count; i++) {
-                fprintf(stderr, "  - %s", packages[i].name);
-                if (packages[i].version[0])
-                    fprintf(stderr, " (%s)", packages[i].version);
-                if (packages[i].type[0])
-                    fprintf(stderr, " [%s]", packages[i].type);
-                if (packages[i].size > 0)
-                    fprintf(stderr, " [%zu bytes]", packages[i].size);
-                fprintf(stderr, "\n");
-            }
+            for (int i = 0; i < pkg_count; i++)
+                fprintf(stderr, "  - %-20s %-10s %-6s %zu bytes\n",
+                        packages[i].name, packages[i].version,
+                        packages[i].type, packages[i].size);
         }
         return 1;
     }
-    
     printf("\n%s (%s)\n", pkg->name, pkg->type[0] ? pkg->type : "bin");
-    
-    // формируем URL
+
+    // libc dependencies
+    if (pkg->libc_type[0] && strcmp(pkg->libc_type, "no") != 0) {
+        bool need_so = (!strcmp(pkg->libc_type, "so") || !strcmp(pkg->libc_type, "both"));
+        bool need_a  = (!strcmp(pkg->libc_type, "a")  || !strcmp(pkg->libc_type, "both"));
+        if (need_so && pkg->so_libc_path[0]) {
+            const char *libname = strrchr(pkg->so_libc_path, '/') + 1;
+            if (!lib_is_installed(libname)) {
+                printf("Installing required library: %s\n", libname);
+                char lib_url[512];
+                snprintf(lib_url, sizeof(lib_url), "%s/%s", BASE_URL, pkg->so_libc_path);
+                char tmp_lib[512];
+                snprintf(tmp_lib, sizeof(tmp_lib), "%s/%s.download", cache_dir(), libname);
+                mkdir_p(cache_dir());
+                if (download_with_progress(lib_url, tmp_lib, 0) != 0) {
+                    fprintf(stderr, "Failed to download library %s\n", libname);
+                    return 1;
+                }
+                char dest_lib[512];
+                snprintf(dest_lib, sizeof(dest_lib), "%s/%s", lib_dir(), libname);
+                mkdir_p(lib_dir());
+                if (rename(tmp_lib, dest_lib) != 0) {
+                    perror("rename library");
+                    unlink(tmp_lib);
+                    return 1;
+                }
+                chmod(dest_lib, 0644);
+                printf("Library %s installed\n", libname);
+            }
+        }
+        if (need_a && pkg->a_libc_path[0]) {
+            const char *libname = strrchr(pkg->a_libc_path, '/') + 1;
+            if (!lib_is_installed(libname)) {
+                printf("Installing required static library: %s\n", libname);
+                char lib_url[512];
+                snprintf(lib_url, sizeof(lib_url), "%s/%s", BASE_URL, pkg->a_libc_path);
+                char tmp_lib[512];
+                snprintf(tmp_lib, sizeof(tmp_lib), "%s/%s.download", cache_dir(), libname);
+                if (download_with_progress(lib_url, tmp_lib, 0) != 0) {
+                    fprintf(stderr, "Failed to download static library %s\n", libname);
+                    return 1;
+                }
+                char dest_lib[512];
+                snprintf(dest_lib, sizeof(dest_lib), "%s/%s", lib_dir(), libname);
+                if (rename(tmp_lib, dest_lib) != 0) {
+                    perror("rename static library");
+                    unlink(tmp_lib);
+                    return 1;
+                }
+                chmod(dest_lib, 0644);
+                printf("Static library %s installed\n", libname);
+            }
+        }
+    }
+
+    // Download main content
     char url[512];
     if (pkg->filename[0])
-        snprintf(url, sizeof(url), "%s/%s/%s", BASE_URL, BASE_PATH, pkg->filename);
+        snprintf(url, sizeof(url), "%s/%s", BASE_URL, pkg->filename);
     else {
-        // используем pool_dir или pool_dir_libs в зависимости от типа
-        const char *pool = (!strcmp(pkg->type, "lib")) ? POOL_DIR_LIBS : POOL_DIR;
-        snprintf(url, sizeof(url), "%s/%s/%s/%s", BASE_URL, BASE_PATH, pool, pkg->name);
+        const char *pool = (!strcmp(pkg->type, "lib") || !strcmp(pkg->type, "so") ||
+                            !strcmp(pkg->type, "a") || !strcmp(pkg->type, "la"))
+                           ? "pool/main/libs" : "pool/main";
+        snprintf(url, sizeof(url), "%s/%s/%s", BASE_URL, pool, pkg->name);
     }
-    
-    // временный файл
     char tmp_path[512];
     snprintf(tmp_path, sizeof(tmp_path), "%s/%s.download", cache_dir(), pkg->name);
     mkdir_p(cache_dir());
-    
-    // скачиваем с прогресс-баром
     printf("Update cache\n");
     if (download_with_progress(url, tmp_path, pkg->size) != 0) {
         fprintf(stderr, "Download failed\n");
         unlink(tmp_path);
         return 1;
     }
-    
-    // определяем директорию установки
+
+    // Определяем директорию установки
     char dest_dir[512];
-    if (!strcmp(pkg->type, "lib")) {
+    if (pkg->destdir[0])
+        snprintf(dest_dir, sizeof(dest_dir), "%s/%s", install_prefix(), pkg->destdir);
+    else if (!strcmp(pkg->type, "lib") || !strcmp(pkg->type, "so") ||
+             !strcmp(pkg->type, "a")  || !strcmp(pkg->type, "la"))
         snprintf(dest_dir, sizeof(dest_dir), "%s", lib_dir());
-    } else {
+    else
         snprintf(dest_dir, sizeof(dest_dir), "%s/bin", install_prefix());
-    }
     mkdir_p(dest_dir);
-    
-    char dest_path[512];
-    snprintf(dest_path, sizeof(dest_path), "%s/%s", dest_dir, pkg->name);
-    
-    // перемещаем
-    if (rename(tmp_path, dest_path) != 0) {
-        perror("rename");
+
+    if (pkg->is_archive) {
+        printf("Extracting archive to %s\n", dest_dir);
+        if (extract_archive(tmp_path, dest_dir) != 0) {
+            unlink(tmp_path);
+            return 1;
+        }
         unlink(tmp_path);
-        return 1;
-    }
-    
-    // chmod +x для бинарников
-    if (!strcmp(pkg->type, "bin")) {
-        if (chmod(dest_path, 0755) != 0) {
-            perror("chmod");
-            fprintf(stderr, "Warning: could not make file executable\n");
-        }
+        char chmod_cmd[1024];
+        // Исключаем библиотечные расширения из chmod +x
+        snprintf(chmod_cmd, sizeof(chmod_cmd),
+                 "find \"%s\" -type f ! -name \"*.so\" ! -name \"*.a\" ! -name \"*.la\" -exec chmod +x {} \\; 2>/dev/null", dest_dir);
+        system(chmod_cmd);
     } else {
-        // библиотеки: chmod 644
-        if (chmod(dest_path, 0644) != 0) {
-            perror("chmod");
-            fprintf(stderr, "Warning: could not set library permissions\n");
+        char dest_path[512];
+        snprintf(dest_path, sizeof(dest_path), "%s/%s", dest_dir, pkg->name);
+        if (rename(tmp_path, dest_path) != 0) {
+            perror("rename");
+            unlink(tmp_path);
+            return 1;
         }
+        // Установка прав
+        if (!strcmp(pkg->type, "bin") || !strcmp(pkg->type, "script"))
+            chmod(dest_path, 0755);
+        else if (!strcmp(pkg->type, "lib") || !strcmp(pkg->type, "so") ||
+                 !strcmp(pkg->type, "a")  || !strcmp(pkg->type, "la"))
+            chmod(dest_path, 0644);
     }
-    
-    printf("\nInstall success! -> %s\n", dest_path);
+
+    printf("\nInstall success! -> %s\n", dest_dir);
+    record_installed(pkg);
+
+    if (!strcmp(pkg->type, "bin") || !strcmp(pkg->type, "dir")) {
+        printf("\nChecking library dependencies...\n");
+        check_dir_ldd(dest_dir);
+    }
     return 0;
 }
 
 static int cmd_delete_cache(void) {
     const char *dir = cache_dir();
     printf("Delete cache\n");
-    
     DIR *dp = opendir(dir);
     if (!dp) {
         printf("[===========>]\nSuccess! (cache empty)\n");
         return 0;
     }
-    
     printf("[");
     int count = 0;
     struct dirent *entry;
-    
     while ((entry = readdir(dp)) != NULL) {
         if (entry->d_name[0] == '.') continue;
-        
         char path[1024];
         snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
-        
-        if (unlink(path) == 0) {
-            count++;
-            printf("=");
-            fflush(stdout);
-        }
+        if (unlink(path) == 0) { count++; printf("="); fflush(stdout); }
     }
     closedir(dp);
     rmdir(dir);
-    
     printf("]\nSuccess!\n");
     return 0;
 }
@@ -460,86 +555,79 @@ static int cmd_update(void) {
     char cache_path[512];
     snprintf(cache_path, sizeof(cache_path), "%s/%s", cache_dir(), PACKAGES_FILE);
     mkdir_p(cache_dir());
-    
     char url[512];
-    snprintf(url, sizeof(url), "%s%s/%s", BASE_URL, BASE_PATH, PACKAGES_FILE);
-    
+    snprintf(url, sizeof(url), "%s/%s", BASE_URL, PACKAGES_FILE);
     printf("Update cache\n");
     if (download_packages_list(url, cache_path) != 0) {
         fprintf(stderr, "Failed to update cache\n");
         return 1;
     }
-    
     parse_packages_file(cache_path);
     printf("Cache updated (%d packages)\n", pkg_count);
-    
     return 0;
 }
 
 static int cmd_search(const char *query) {
     char cache_path[512];
     snprintf(cache_path, sizeof(cache_path), "%s/%s", cache_dir(), PACKAGES_FILE);
-    
-    if (!file_exists(cache_path) || file_size(cache_path) < 10) {
-        cmd_update();
-    }
-    
+    if (!file_exists(cache_path) || file_size(cache_path) < 10) cmd_update();
     parse_packages_file(cache_path);
-    
     int found = 0;
     printf("\nSearch results for '%s':\n\n", query);
-    
     for (int i = 0; i < pkg_count; i++) {
         if (strstr(packages[i].name, query)) {
-            printf("  %-20s", packages[i].name);
-            if (packages[i].version[0])
-                printf("%-10s", packages[i].version);
-            if (packages[i].type[0])
-                printf("[%-4s]", packages[i].type);
-            if (packages[i].size > 0)
-                printf("%8zu bytes", packages[i].size);
-            printf("\n");
+            printf("  %-20s %-10s [%-4s] %8zu bytes\n",
+                   packages[i].name, packages[i].version,
+                   packages[i].type, packages[i].size);
             found++;
         }
     }
-    
-    if (found == 0)
-        printf("  No packages found\n");
-    else
-        printf("\nFound %d package(s)\n", found);
-    
+    if (!found) printf("  No packages found\n");
+    else printf("\nFound %d package(s)\n", found);
     return 0;
 }
 
 static void usage(const char *prog) {
-    printf("WPM - Wilix Package Manager\n\n");
+    printf("WPM - Wilix Package Manager (root required except list -i)\n\n");
     printf("Usage:\n");
-    printf("  %s add <pkg>          Install package\n", prog);
-    printf("  %s --list-package     Show raw Packages file\n", prog);
-    printf("  %s search <query>     Search for packages\n", prog);
-    printf("  %s update             Force cache update\n", prog);
-    printf("  %s --delete-cache     Clear local cache\n", prog);
-    printf("\nExamples:\n");
-    printf("  %s add nano           Install binary\n", prog);
-    printf("  %s add libtest        Install library\n", prog);
-    printf("  %s search edit\n", prog);
-    printf("\nCache: %s\n", cache_dir());
-    printf("Install prefix (bin): %s/bin\n", install_prefix());
-    printf("Install prefix (lib): %s\n", lib_dir());
+    printf("  %s add <pkg>            Install package (root)\n", prog);
+    printf("  %s list                 Show raw Packages file (root)\n", prog);
+    printf("  %s list -i              Show installed packages (no root)\n", prog);
+    printf("  %s search <query>       Search for packages (root)\n", prog);
+    printf("  %s update               Force cache update (root)\n", prog);
+    printf("  %s --delete-cache       Clear local cache (root)\n", prog);
+    printf("\nBinaries -> /usr/bin, Libraries -> /usr/lib\n");
 }
 
 int main(int argc, char **argv) {
+    int need_root = 1;
+    if (argc >= 2) {
+        if (!strcmp(argv[1], "list") && argc >= 3 && !strcmp(argv[2], "-i"))
+            need_root = 0;
+        else if (!strcmp(argv[1], "help") || !strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))
+            need_root = 0;
+    }
+
+    if (need_root && geteuid() != 0) {
+        fprintf(stderr, "[ERROR 10] not start of doas/sudo\n");
+        return 10;
+    }
+
     if (argc < 2) {
         usage(argv[0]);
         return 1;
     }
-    
+
     signal(SIGPIPE, SIG_IGN);
-    
+
     if (!strcmp(argv[1], "add") && argc == 3)
         return cmd_add(argv[2]);
-    else if (!strcmp(argv[1], "--list-package") || !strcmp(argv[1], "list"))
-        return cmd_list_packages();
+    else if (!strcmp(argv[1], "list")) {
+        if (argc >= 3 && !strcmp(argv[2], "-i"))
+            return cmd_list_installed();
+        else
+            return cmd_list_packages();
+    }
     else if (!strcmp(argv[1], "search") && argc == 3)
         return cmd_search(argv[2]);
     else if (!strcmp(argv[1], "update"))
