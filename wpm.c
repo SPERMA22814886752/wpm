@@ -1,9 +1,4 @@
-/*
- * WPM - Wilix Package Manager (root required except list -i)
- * Binaries -> /usr/bin
- * Libraries -> /usr/lib
- * Support: bin, lib, so, a, la, script, dir, dev
- */
+// wpm - Wilix Package Manager
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -194,11 +189,11 @@ static void parse_packages_file(const char *filepath) {
     pkg_count = 0;
     FILE *f = fopen(filepath, "r");
     if (!f) return;
-    
+
     char line[1024];
     struct Package p;
     memset(&p, 0, sizeof(p));
-    
+
     while (fgets(line, sizeof(line), f)) {
         size_t len = strlen(line);
         while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
@@ -224,7 +219,7 @@ static void parse_packages_file(const char *filepath) {
         char *key = line;
         char *value = colon + 1;
         while (*value == ' ') value++;
-        
+
         if (!strcmp(key, "Package")) strncpy(p.name, value, sizeof(p.name)-1);
         else if (!strcmp(key, "Version")) strncpy(p.version, value, sizeof(p.version)-1);
         else if (!strcmp(key, "Type")) strncpy(p.type, value, sizeof(p.type)-1);
@@ -269,9 +264,8 @@ static int extract_archive(const char *archive_path, const char *dest_dir) {
     return system(cmd) == 0 ? 0 : -1;
 }
 
-/* ---------- проверка ldd (пропускаем не‑ELF) ---------- */
+/* ---------- проверка ldd ---------- */
 static void check_ldd(const char *binary_path) {
-    // Пропускаем файлы, которые точно не ELF
     const char *ext = strrchr(binary_path, '.');
     if (ext) {
         if (!strcmp(ext, ".a") || !strcmp(ext, ".la") ||
@@ -345,7 +339,7 @@ static int cmd_list_installed(void) {
         while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
         if (len == 0) continue;
         char *name = strtok(line, "|");
-        char *ver = strtok(NULL, "|");
+        char *ver  = strtok(NULL, "|");
         char *type = strtok(NULL, "|");
         char *dest = strtok(NULL, "|");
         printf("  %-20s %-10s %-6s %s\n", name ? name : "-",
@@ -405,7 +399,7 @@ static int cmd_add(const char *name) {
     }
     printf("\n%s (%s)\n", pkg->name, pkg->type[0] ? pkg->type : "bin");
 
-    // libc dependencies
+    // либс зависимости
     if (pkg->libc_type[0] && strcmp(pkg->libc_type, "no") != 0) {
         bool need_so = (!strcmp(pkg->libc_type, "so") || !strcmp(pkg->libc_type, "both"));
         bool need_a  = (!strcmp(pkg->libc_type, "a")  || !strcmp(pkg->libc_type, "both"));
@@ -459,7 +453,7 @@ static int cmd_add(const char *name) {
         }
     }
 
-    // Download main content
+    // установка чего то
     char url[512];
     if (pkg->filename[0])
         snprintf(url, sizeof(url), "%s/%s", BASE_URL, pkg->filename);
@@ -479,7 +473,7 @@ static int cmd_add(const char *name) {
         return 1;
     }
 
-    // Определяем директорию установки
+    // определяем директорию установки
     char dest_dir[512];
     if (pkg->destdir[0])
         snprintf(dest_dir, sizeof(dest_dir), "%s/%s", install_prefix(), pkg->destdir);
@@ -498,7 +492,6 @@ static int cmd_add(const char *name) {
         }
         unlink(tmp_path);
         char chmod_cmd[1024];
-        // Исключаем библиотечные расширения из chmod +x
         snprintf(chmod_cmd, sizeof(chmod_cmd),
                  "find \"%s\" -type f ! -name \"*.so\" ! -name \"*.a\" ! -name \"*.la\" -exec chmod +x {} \\; 2>/dev/null", dest_dir);
         system(chmod_cmd);
@@ -510,7 +503,6 @@ static int cmd_add(const char *name) {
             unlink(tmp_path);
             return 1;
         }
-        // Установка прав
         if (!strcmp(pkg->type, "bin") || !strcmp(pkg->type, "script"))
             chmod(dest_path, 0755);
         else if (!strcmp(pkg->type, "lib") || !strcmp(pkg->type, "so") ||
@@ -525,6 +517,113 @@ static int cmd_add(const char *name) {
         printf("\nChecking library dependencies...\n");
         check_dir_ldd(dest_dir);
     }
+    return 0;
+}
+
+/* ---------- удаление пакета ---------- */
+static int cmd_remove(const char *name) {
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/%s", cache_dir(), INSTALLED_DB);
+
+    FILE *f = fopen(db_path, "r");
+    if (!f) {
+        fprintf(stderr, "Package '%s' is not installed.\n", name);
+        return 1;
+    }
+
+    char line[512];
+    char found_version[64] = {0};
+    char found_type[16]    = {0};
+    char found_dest[128]   = {0};
+
+    while (fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+        if (len == 0) continue;
+
+        char tmp[512];
+        strncpy(tmp, line, sizeof(tmp)-1);
+        char *n    = strtok(tmp, "|");
+        char *ver  = strtok(NULL, "|");
+        char *type = strtok(NULL, "|");
+        char *dest = strtok(NULL, "|");
+
+        if (n && !strcmp(n, name)) {
+            if (ver)  strncpy(found_version, ver,  sizeof(found_version)-1);
+            if (type) strncpy(found_type,    type, sizeof(found_type)-1);
+            if (dest) strncpy(found_dest,    dest, sizeof(found_dest)-1);
+            break;
+        }
+    }
+    fclose(f);
+
+    if (!found_version[0]) {
+        fprintf(stderr, "Package '%s' is not installed.\n", name);
+        return 1;
+    }
+
+    // определяем путь к файлу/директории
+    char target[512];
+    if (found_dest[0])
+        snprintf(target, sizeof(target), "%s/%s/%s", install_prefix(), found_dest, name);
+    else if (!strcmp(found_type, "lib") || !strcmp(found_type, "so") ||
+             !strcmp(found_type, "a")   || !strcmp(found_type, "la"))
+        snprintf(target, sizeof(target), "%s/%s", lib_dir(), name);
+    else
+        snprintf(target, sizeof(target), "%s/bin/%s", install_prefix(), name);
+
+    printf("Removing %s (%s)...\n", name, found_version);
+
+    // удаляем файл или директорию
+    struct stat st;
+    if (stat(target, &st) != 0) {
+        fprintf(stderr, "Warning: '%s' not found on disk, removing from DB only.\n", target);
+    } else if (S_ISDIR(st.st_mode)) {
+        char cmd[768];
+        snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", target);
+        if (system(cmd) != 0) {
+            fprintf(stderr, "Failed to remove directory %s\n", target);
+            return 1;
+        }
+    } else {
+        if (unlink(target) != 0) {
+            perror("unlink");
+            return 1;
+        }
+    }
+
+    // перезаписываем installed.list без удалённой записи
+    char db_tmp[512];
+    snprintf(db_tmp, sizeof(db_tmp), "%s/%s.tmp", cache_dir(), INSTALLED_DB);
+
+    FILE *in  = fopen(db_path, "r");
+    FILE *out = fopen(db_tmp, "w");
+    if (!in || !out) {
+        perror("fopen db");
+        if (in)  fclose(in);
+        if (out) fclose(out);
+        return 1;
+    }
+
+    char buf[512];
+    while (fgets(buf, sizeof(buf), in)) {
+        char tmp2[512];
+        strncpy(tmp2, buf, sizeof(tmp2)-1);
+        char *n = strtok(tmp2, "|");
+        if (n && !strcmp(n, name)) continue;
+        fputs(buf, out);
+    }
+    fclose(in);
+    fclose(out);
+
+    if (rename(db_tmp, db_path) != 0) {
+        perror("rename db");
+        unlink(db_tmp);
+        return 1;
+    }
+    chmod(db_path, 0644);
+
+    printf("Removed %s -> %s\n", name, target);
     return 0;
 }
 
@@ -591,6 +690,7 @@ static void usage(const char *prog) {
     printf("WPM - Wilix Package Manager (root required except list -i)\n\n");
     printf("Usage:\n");
     printf("  %s add <pkg>            Install package (root)\n", prog);
+    printf("  %s remove <pkg>         Remove installed package (root)\n", prog);
     printf("  %s list                 Show raw Packages file (root)\n", prog);
     printf("  %s list -i              Show installed packages (no root)\n", prog);
     printf("  %s search <query>       Search for packages (root)\n", prog);
@@ -622,6 +722,8 @@ int main(int argc, char **argv) {
 
     if (!strcmp(argv[1], "add") && argc == 3)
         return cmd_add(argv[2]);
+    else if (!strcmp(argv[1], "remove") && argc == 3)
+        return cmd_remove(argv[2]);
     else if (!strcmp(argv[1], "list")) {
         if (argc >= 3 && !strcmp(argv[2], "-i"))
             return cmd_list_installed();
